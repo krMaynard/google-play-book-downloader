@@ -172,10 +172,13 @@ def extract_book_id(text: str) -> str:
 
     # https://play.google.com/books/reader?id=XXXX or store details?id=XXXX
     match = re.search(r"[?&]id=([^&\s]+)", text)
-    if match:
-        return match.group(1)
+    book_id = match.group(1) if match else text
 
-    return text
+    # The id becomes a directory name, so reject anything that could escape it.
+    if "/" in book_id or "\\" in book_id or ".." in book_id:
+        return ""
+
+    return book_id
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +268,7 @@ def download_page(src, cookies, headers):
     logger.debug(f"Downloading url: {page_url}")
 
     response = requests.get(page_url, cookies=cookies, headers=headers)
+    response.raise_for_status()
 
     mime_type = response.headers.get("content-type")
     buffer = response.content
@@ -311,6 +315,7 @@ def fetch_manifest(book_id: str, cookies: dict, headers: dict) -> dict:
         cookies=cookies,
         headers=headers,
     )
+    response.raise_for_status()
     return json.loads(response.text)
 
 

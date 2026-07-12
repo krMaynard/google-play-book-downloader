@@ -13,14 +13,14 @@ import threading
 import traceback
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from play_books import downloader
 from play_books.downloader import DownloadProgress
 
 # The curl.txt session file lives at the repository root, shared with the CLI.
 CURL_FILE = Path(__file__).resolve().parent.parent / "curl.txt"
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "books"
+DEFAULT_OUTPUT_DIR = (Path(__file__).resolve().parent.parent / "books").resolve()
 
 # Whether the optional PDF-building dependencies are importable.
 try:
@@ -28,7 +28,7 @@ try:
     import pikepdf  # noqa: F401
 
     PDF_AVAILABLE = True
-except Exception:
+except ImportError:
     PDF_AVAILABLE = False
 
 
@@ -37,7 +37,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
     download_progress: dict = {}
     _progress_lock = threading.Lock()
-    _cancel_requested: bool = False
+    _cancel_requested = threading.Event()
 
     @classmethod
     def _set_progress(cls, data: dict):
@@ -75,7 +75,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         elif path == "/api/settings":
             self._handle_settings()
         elif path.startswith("/api/book/"):
-            self._handle_book_info(path[len("/api/book/") :])
+            # The book id / reader URL is percent-encoded by the browser.
+            self._handle_book_info(unquote(path[len("/api/book/") :]))
         elif path == "/api/progress":
             self._handle_progress()
         else:
@@ -84,7 +85,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
-        data = json.loads(body) if body else {}
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
 
         if self.path == "/api/curl":
             self._handle_save_curl(data)
@@ -163,7 +168,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         with self._progress_lock:
             status = self.download_progress.get("status")
             if status and status not in ("completed", "error", "cancelled"):
-                DownloaderHandler._cancel_requested = True
+                DownloaderHandler._cancel_requested.set()
                 self._send_json({"success": True})
             else:
                 self._send_json({"success": False, "message": "No active download"})
@@ -174,6 +179,13 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "path required"}, 400)
             return
         path = Path(path_str).resolve()
+        # Confine reveals to the downloads directory to avoid disclosing
+        # arbitrary filesystem locations.
+        try:
+            path.relative_to(DEFAULT_OUTPUT_DIR)
+        except ValueError:
+            self._send_json({"error": "Access denied: path must be within the books directory"}, 403)
+            return
         if not path.exists():
             self._send_json({"error": "Path does not exist"}, 404)
             return
@@ -188,18 +200,21 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         """Open the OS file manager at ``path`` (best effort, cross-platform)."""
         target = str(path if path.is_dir() else path.parent)
         system = platform.system()
+        # "--" stops a leading-hyphen path from being read as a CLI option.
         if system == "Darwin":
-            subprocess.Popen(["open", target])
+            subprocess.Popen(["open", "--", target])
         elif system == "Windows":
             subprocess.Popen(["explorer", target])
         else:
-            subprocess.Popen(["xdg-open", target])
+            subprocess.Popen(["xdg-open", "--", target])
 
     def _handle_download(self, data: dict):
         raw_id = data.get("book_id", "")
         book_id = downloader.extract_book_id(raw_id)
         build_pdf = bool(data.get("build_pdf"))
-        output_dir = data.get("output_dir") or str(DEFAULT_OUTPUT_DIR)
+        # Downloads are always confined to the books directory; the book id is
+        # sanitized by extract_book_id so it cannot escape it.
+        output_dir = str(DEFAULT_OUTPUT_DIR)
 
         if not book_id:
             self._send_json({"error": "book_id required"}, 400)
@@ -233,7 +248,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         self._send_json({"status": "started", "book_id": book_id})
 
     def _download_async(self, book_id, cookies, headers, output_dir, build_pdf):
-        DownloaderHandler._cancel_requested = False
+        DownloaderHandler._cancel_requested.clear()
 
         def on_progress(progress: DownloadProgress):
             self._set_progress(
@@ -257,7 +272,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 headers=headers,
                 output_dir=output_dir,
                 progress_callback=on_progress,
-                cancel_check=lambda: DownloaderHandler._cancel_requested,
+                cancel_check=DownloaderHandler._cancel_requested.is_set,
             )
 
             pdf_path = None
@@ -297,7 +312,6 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         payload = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)

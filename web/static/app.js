@@ -252,6 +252,7 @@ async function startDownload() {
             failDownload(data.error);
             return;
         }
+        if (pollTimer) clearTimeout(pollTimer);
         pollProgress();
     } catch (err) {
         failDownload('Failed to start download.');
