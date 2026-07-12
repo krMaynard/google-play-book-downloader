@@ -407,7 +407,7 @@ function renderResult(data) {
     if (data.pdf) rows.push(fileRow('PDF', data.pdf));
 
     const failedNote = data.failed_pages
-        ? `<p class="text-sm text-amber-600 mt-3">${data.failed_pages} of ${data.total_pages} ${unit} could not be downloaded.</p>`
+        ? `<p class="text-sm text-amber-600 mt-3">${escapeHtml(data.failed_pages)} of ${escapeHtml(data.total_pages)} ${escapeHtml(unit)} could not be downloaded.</p>`
         : '';
 
     section.innerHTML = `

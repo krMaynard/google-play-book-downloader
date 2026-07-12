@@ -24,6 +24,10 @@ import requests
 # Wait between requests to reduce the risk of getting flagged for abuse.
 GOOGLE_PAGE_DOWNLOAD_PACER = 0.1
 
+# Per-request timeout (connect + between-bytes read) so a stalled connection
+# can't hang a download thread forever.
+REQUEST_TIMEOUT = 30
+
 logger = logging.getLogger(__name__)
 
 
@@ -267,7 +271,7 @@ def download_page(src, cookies, headers):
     page_url = urlunparse(url_parts)
     logger.debug(f"Downloading url: {page_url}")
 
-    response = requests.get(page_url, cookies=cookies, headers=headers)
+    response = requests.get(page_url, cookies=cookies, headers=headers, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
 
     mime_type = response.headers.get("content-type")
@@ -313,7 +317,9 @@ def fetch_segment(url, cookies, headers):
     query["hl"] = ["en"]  # Fix encoding issues with Cyrillic.
     segment_url = segment_url._replace(query=urlencode(query, doseq=True))
 
-    response = requests.get(urlunparse(segment_url), cookies=cookies, headers=headers)
+    response = requests.get(
+        urlunparse(segment_url), cookies=cookies, headers=headers, timeout=REQUEST_TIMEOUT
+    )
     response.raise_for_status()
     return response
 
@@ -344,6 +350,7 @@ def fetch_manifest(book_id: str, cookies: dict, headers: dict) -> dict:
         f"?hl=en&authuser=2&source=ge-web-app",
         cookies=cookies,
         headers=headers,
+        timeout=REQUEST_TIMEOUT,
     )
     response.raise_for_status()
     return json.loads(response.text)
@@ -432,6 +439,7 @@ def download_book(
         f"https://play.google.com/books/reader?id={book_id}&hl=en",
         cookies=cookies,
         headers=headers,
+        timeout=REQUEST_TIMEOUT,
     )
     body = reader_response.text
 
@@ -668,6 +676,7 @@ def download_segments(
         f"https://play.google.com/books/reader?id={book_id}&hl=en",
         cookies=cookies,
         headers=headers,
+        timeout=REQUEST_TIMEOUT,
     )
     body = reader_response.text
 
@@ -696,7 +705,7 @@ def download_segments(
         )
 
     (book_dir / "segments.txt").write_text(
-        "".join(f"{s.get('label', '')}\n" for s in segments)
+        "".join(f"{s.get('label') or ''}\n" for s in segments)
     )
 
     logger.info(f"Starting to download {total} segments…")
@@ -717,7 +726,9 @@ def download_segments(
     for i, segment in enumerate(segments):
         check_cancel()
         seg_no = i + 1
-        label = segment.get("label", f"segment-{seg_no}")
+        # `or` (not a .get default) so an explicit "label": null also falls back,
+        # otherwise every null-labelled segment would clobber None.xhtml.
+        label = segment.get("label") or f"segment-{seg_no}"
 
         try:
             url = "https://play.google.com" + segment["link"]
