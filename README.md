@@ -18,6 +18,33 @@ a PDF from them, do OCR, and add metadata.
 
 **Note**: this script only works for books that have the “Original Pages” viewing option.
 
+# Web GUI (recommended)
+
+A small local web interface is included that wraps the whole PDF workflow — no
+command line needed. It runs entirely on your machine.
+
+```shell
+poetry run python gui.py            # opens http://localhost:8000 in your browser
+poetry run python gui.py --port 9000
+poetry run python gui.py --no-browser
+```
+
+Then:
+
+1. Click **Set Session**, follow the on-screen steps to copy your book request
+   as a cURL command, and paste it in. (This is the same `curl.txt` session used
+   by the CLI, saved locally.)
+2. Paste a **book ID** or a reader link (`https://play.google.com/books/reader?id=…`)
+   and click **Fetch book** to preview the title, author, and page count.
+3. Click **Download pages**. Progress is shown live and pages land in
+   `books/<BOOK_ID>/`.
+4. Tick **Build PDF after download** to also produce a PDF with metadata and a
+   table of contents (requires the `img2pdf` and `pikepdf` dependencies, which
+   `poetry install` provides).
+
+The GUI has no third-party server dependencies — it uses Python's built-in HTTP
+server and reuses the same download logic as the CLI (`play_books/`).
+
 # Prerequisites
 
 - Install [Python](https://www.python.org/downloads/)
