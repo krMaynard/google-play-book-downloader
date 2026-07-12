@@ -3,12 +3,16 @@
 Download and decrypt books you own on Google Play Books — through a clean local
 **web GUI** or the original command line. Each page is downloaded as a
 high-resolution image; from there you can build a PDF (with metadata and a table
-of contents), run OCR, and optimize.
+of contents), run OCR, and optimize. Books available in reflowable form can
+instead be reconstructed into a valid, self-contained **EPUB**
+(see [Usage (EPUB download)](#usage-epub-download)).
 
 > **This fork adds a browser-based GUI** on top of the original command-line
 > tool by [devnoname120/google-play-book-downloader](https://github.com/devnoname120/google-play-book-downloader).
 > All of the original functionality is preserved — the GUI simply reuses the same
 > download logic. Licensed under AGPL-3.0, like the upstream project.
+
+![The Play Books Downloader web GUI: a book preview card with a live download progress bar](docs/screenshot.png)
 
 **Why**:
 
@@ -54,6 +58,10 @@ Then:
 
 The GUI has no third-party server dependencies — it uses Python's built-in HTTP
 server and reuses the same download logic as the CLI (`play_books/`).
+
+> **EPUB** reconstruction is currently available from the command line only
+> (see [Usage (EPUB download)](#usage-epub-download)); the GUI covers the
+> image-pages → PDF workflow.
 
 # Prerequisites
 
