@@ -100,7 +100,7 @@ You will find the downloaded book pages in the `books/[BOOK_ID]` folder.
 
 # Usage (EPUB download)
 
-There is an *extremely experimental* EPUB downloader in the project as well. For now it just downloads all the pages of a given book in the HTML format and embeds all the resources (images, fonts, etc.) directly in the HTML files as base64. EPUB is not reconstructed yet.
+There is an *experimental* EPUB downloader in the project as well. It downloads and decrypts every segment of a book, saving each one as an XHTML file (plus its CSS) alongside a `manifest.json`. A companion tool then reconstructs a valid, self-contained EPUB from those segments.
 
 No support yet as it's experimental! Please don't open issues on GitHub regarding the EPUB downloader.
 
@@ -123,4 +123,23 @@ No support yet as it's experimental! Please don't open issues on GitHub regardin
 poetry run python google-play-book-downloader-epub.py
 ```
 
-You will find the downloaded book pages as HTML in the `books/[BOOK_ID]/segments` folder. The output is very crude and EPUBs are not reconstructed.
+You will find the downloaded segments as `books/[BOOK_ID]/[label].xhtml` (plus a `[label].css` for each), along with a `books/[BOOK_ID]/manifest.json`.
+
+## Reconstructing the EPUB
+
+Once the segments have been downloaded, reconstruct a single EPUB file with:
+
+```shell
+poetry run play-book-epub-build books/[BOOK_ID]
+```
+
+This produces `books/[BOOK_ID]/book.epub`. The tool:
+
+- **Embeds all resources**: images and fonts referenced from the segments (and from their CSS) are downloaded once, deduplicated, packaged inside the EPUB, and every reference is rewritten to a relative path, so nothing points at the network anymore.
+- **Rebuilds valid XHTML** content documents from each segment.
+- **Reconstructs the table of contents** hierarchically from the manifest's `toc_entry` list (falling back to a flat per-segment TOC when the entries can't be mapped to downloaded segments).
+- **Sets the cover, a stable `urn:uuid` identifier, and Dublin Core metadata** (title, authors, publisher, date, language, reading direction) from the manifest.
+
+Embedding remote resources requires the same cookies/headers as the download step. Place a `curl.txt` (see the PDF instructions above) in `books/[BOOK_ID]/` or the current directory. Without it, remote resources are skipped (and logged) rather than aborting the build.
+
+The output is validated against [epubcheck](https://github.com/w3c/epubcheck) in the test suite (`poetry run pytest`).

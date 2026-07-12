@@ -11,3 +11,6 @@
 
 *.enc
 *.json
+
+__pycache__/
+*.pyc
