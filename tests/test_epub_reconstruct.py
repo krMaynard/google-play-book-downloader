@@ -117,6 +117,31 @@ def test_epubcheck_passes(tmp_path):
     assert result.valid, "\n".join(f"{m.level}: {m.message}" for m in errors)
 
 
+def test_percent_encoded_data_uri(tmp_path):
+    from play_book_epub_tool.play_book_epub_tool import default_resolver
+
+    resolve = default_resolver(tmp_path)
+    # A non-base64 SVG data URI with percent-encoded '<', '>' and space.
+    data, media_type = resolve("data:image/svg+xml,%3Csvg%3E%20%3C/svg%3E")
+    assert data == b"<svg> </svg>"
+    assert media_type == "image/svg+xml"
+
+
+def test_toc_tolerates_null_and_negative_depth(tmp_path):
+    base = _write_book(tmp_path)
+    manifest = json.loads((base / "manifest.json").read_text())
+    # null and negative depths used to crash (_build_toc: int(None) / popped root).
+    manifest["toc_entry"] = [
+        {"label": "Chapter One", "depth": None},
+        {"label": "Section 1.1", "depth": -2},
+        {"label": "Chapter Two", "depth": 0},
+    ]
+    (base / "manifest.json").write_text(json.dumps(manifest))
+
+    output = build_epub(base, resolver=fake_resolver)  # must not raise
+    assert output.exists()
+
+
 def test_flat_toc_fallback(tmp_path):
     base = _write_book(tmp_path)
     # Remove toc_entry so the mapping can't resolve → flat fallback.

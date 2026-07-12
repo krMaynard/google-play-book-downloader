@@ -31,7 +31,7 @@ import mimetypes
 import pathlib
 import re
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import unquote_to_bytes, urlparse
 
 import click
 from bs4 import BeautifulSoup
@@ -122,7 +122,9 @@ def default_resolver(base_path):
             try:
                 header, _, payload = url[len("data:"):].partition(",")
                 media_type = header.split(";")[0] or "application/octet-stream"
-                data = base64.b64decode(payload) if ";base64" in header else payload.encode("utf-8")
+                # Non-base64 data: payloads are percent-encoded (e.g. inline SVG), so decode
+                # the escapes rather than taking the raw text bytes.
+                data = base64.b64decode(payload) if ";base64" in header else unquote_to_bytes(payload)
                 return data, media_type
             except Exception as exc:  # noqa: BLE001 - a bad data URI shouldn't abort the build
                 logger.warning("Skipping malformed data: URI (%s)", exc)
@@ -223,8 +225,11 @@ class ResourcePackager:
                     tag.attrs.pop("height", None)
             if tag.has_attr("style"):
                 tag["style"] = self._rewrite_css_urls(tag["style"])
-            if tag.name == "style" and tag.string:
-                tag.string.replace_with(self._rewrite_css_urls(tag.string))
+            if tag.name == "style":
+                # get_text() covers <style> tags with multiple children (comments/text
+                # nodes) where tag.string would be None; the assignment collapses them
+                # into the single rewritten stylesheet.
+                tag.string = self._rewrite_css_urls(tag.get_text())
         return str(soup)
 
     def rewrite_css(self, css):
@@ -339,7 +344,7 @@ def _build_toc(manifest, chapters):
         if chapter is None:
             continue
         resolved.append({"title": label or chapter.title, "href": chapter.file_name,
-                         "depth": int(entry.get("depth", 0))})
+                         "depth": int(entry.get("depth") or 0)})  # tolerate missing/null depth
 
     if not resolved:
         if toc_entries:
@@ -348,7 +353,7 @@ def _build_toc(manifest, chapters):
 
     # Build a nested tree from the flat depth-ordered list.
     root = []
-    stack = [(-1, root)]
+    stack = [(float("-inf"), root)]  # sentinel that no (even negative) depth can pop
     for item in resolved:
         node = {"title": item["title"], "href": item["href"], "children": []}
         while stack and stack[-1][0] >= item["depth"]:
