@@ -12,5 +12,13 @@
 *.enc
 *.json
 
+# Session secrets (cURL command with cookies)
+curl.txt
+
+# Downloaded books
+books/
+
+# Python
 __pycache__/
 *.pyc
+.venv/
