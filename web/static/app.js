@@ -153,7 +153,10 @@ function metaChip(label, value) {
 
 function renderBookCard(book) {
     const card = el('book-card');
-    const pdfDisabled = !settings.pdf_available;
+    const hasScanned = book.has_scanned !== false && book.num_pages > 0;
+    const hasReflowable = !!book.has_reflowable;
+    // Default to whichever edition the book actually has (prefer scanned pages).
+    const defaultFormat = hasScanned ? 'pdf' : (hasReflowable ? 'epub' : 'pdf');
 
     const previewBanner = book.is_full ? '' : `
         <div class="flex items-start gap-2 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 mb-4">
@@ -175,7 +178,8 @@ function renderBookCard(book) {
                 <h2 class="text-xl font-semibold text-zinc-900 leading-snug">${escapeHtml(book.title || book.id)}</h2>
                 ${book.authors ? `<p class="text-zinc-500 mt-1">${escapeHtml(book.authors)}</p>` : ''}
                 <div class="flex flex-wrap gap-2 mt-3">
-                    ${metaChip('Pages', book.num_pages)}
+                    ${book.num_pages ? metaChip('Pages', book.num_pages) : ''}
+                    ${book.num_segments ? metaChip('Segments', book.num_segments) : ''}
                     ${metaChip('Publisher', book.publisher)}
                     ${metaChip('Published', book.pub_date)}
                     ${metaChip('Language', book.language)}
@@ -187,19 +191,19 @@ function renderBookCard(book) {
         <div class="px-6 pb-6">
             ${previewBanner}
 
-            <div class="flex flex-col sm:flex-row sm:items-center gap-4 mb-4">
-                <label class="flex items-center gap-2.5 text-sm text-zinc-700 ${pdfDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}"
-                       title="${pdfDisabled ? 'Install img2pdf and pikepdf to enable PDF building' : 'Build a PDF with metadata and table of contents after download'}">
-                    <input type="checkbox" id="build-pdf" class="w-4 h-4 rounded" ${pdfDisabled ? 'disabled' : ''}>
-                    <span>Build PDF after download ${pdfDisabled ? '<span class="text-xs text-zinc-400">(needs img2pdf + pikepdf)</span>' : ''}</span>
-                </label>
-                ${missingNote ? `<span class="text-xs">${missingNote}</span>` : ''}
+            <p class="text-sm font-medium text-zinc-700 mb-2">Output format</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                ${formatOption('pdf', 'PDF', 'Scanned "Original Pages" → high-res images', hasScanned, defaultFormat === 'pdf')}
+                ${formatOption('epub', 'EPUB', 'Reflowable text → self-contained EPUB', hasReflowable, defaultFormat === 'epub')}
             </div>
 
+            <div id="format-note" class="text-xs text-zinc-500 mb-4"></div>
+            ${missingNote ? `<div class="text-xs mb-4">${missingNote}</div>` : ''}
+
             <div class="flex items-center gap-3">
-                <button id="download-btn" class="flex-1 sm:flex-none px-6 py-3 bg-play-blue hover:bg-play-blue-dark text-white rounded-xl font-medium transition-colors duration-150 flex items-center justify-center gap-2">
+                <button id="download-btn" class="flex-1 sm:flex-none px-6 py-3 bg-play-blue hover:bg-play-blue-dark text-white rounded-xl font-medium transition-colors duration-150 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                    Download pages
+                    <span class="download-label">Download</span>
                 </button>
                 <button id="cancel-btn" class="hidden px-6 py-3 text-zinc-600 border border-zinc-200 hover:bg-zinc-50 rounded-xl font-medium transition-colors duration-150">Cancel</button>
             </div>
@@ -224,13 +228,72 @@ function renderBookCard(book) {
 
     el('download-btn').addEventListener('click', startDownload);
     el('cancel-btn').addEventListener('click', cancelDownload);
+    card.querySelectorAll('input[name="format"]').forEach(r =>
+        r.addEventListener('change', updateFormatUI));
+    updateFormatUI();
+}
+
+function formatOption(value, label, desc, available, checked) {
+    const dis = !available;
+    return `
+        <label class="relative flex gap-3 p-3 rounded-xl border transition-colors ${dis
+            ? 'border-zinc-100 bg-surface-50 opacity-60 cursor-not-allowed'
+            : 'border-zinc-200 hover:border-play-blue/50 cursor-pointer'}">
+            <input type="radio" name="format" value="${value}" class="mt-0.5"
+                   ${checked && !dis ? 'checked' : ''} ${dis ? 'disabled' : ''}>
+            <span class="min-w-0">
+                <span class="block text-sm font-medium text-zinc-800">${label}${dis
+                    ? ' <span class="text-xs font-normal text-zinc-400">(not available)</span>' : ''}</span>
+                <span class="block text-xs text-zinc-500 mt-0.5">${desc}</span>
+            </span>
+        </label>`;
+}
+
+/** Reflect the selected output format in the note area and download button. */
+function updateFormatUI() {
+    const card = el('book-card');
+    const sel = card.querySelector('input[name="format"]:checked');
+    const note = el('format-note');
+    const btn = el('download-btn');
+    const label = btn.querySelector('.download-label');
+
+    if (!sel) {
+        note.innerHTML = '<span class="text-play-red">This book has no downloadable pages or segments.</span>';
+        btn.disabled = true;
+        label.textContent = 'Download';
+        return;
+    }
+
+    btn.disabled = false;
+
+    if (sel.value === 'epub') {
+        label.textContent = 'Download segments';
+        if (settings.epub_available) {
+            note.innerHTML = 'A reconstructed, self-contained EPUB will be built automatically after download.';
+        } else {
+            note.innerHTML = 'EPUB building needs the <code class="font-mono">ebooklib</code> and <code class="font-mono">beautifulsoup4</code> packages — run <code class="font-mono">poetry install</code>.';
+            note.className = 'text-xs text-play-red mb-4';
+            btn.disabled = true;
+            return;
+        }
+    } else {
+        label.textContent = 'Download pages';
+        if (settings.pdf_available) {
+            note.innerHTML = '<label class="flex items-center gap-2 cursor-pointer text-zinc-600"><input type="checkbox" id="build-pdf" class="w-4 h-4 rounded" checked> Also build a PDF (metadata + table of contents) after download</label>';
+        } else {
+            note.innerHTML = 'Pages download as images. Install <code class="font-mono">img2pdf</code> + <code class="font-mono">pikepdf</code> to also build a PDF.';
+        }
+    }
+    note.className = 'text-xs text-zinc-500 mb-4';
 }
 
 // --- download + progress ---------------------------------------------------
 async function startDownload() {
     if (!currentBook) return;
 
-    const buildPdf = !!(el('build-pdf') && el('build-pdf').checked);
+    const sel = el('book-card').querySelector('input[name="format"]:checked');
+    const format = sel ? sel.value : 'pdf';
+    const build = !!(el('build-pdf') && el('build-pdf').checked);
 
     el('download-btn').classList.add('hidden');
     el('cancel-btn').classList.remove('hidden');
@@ -245,7 +308,7 @@ async function startDownload() {
         const res = await fetch(`${API}/api/download`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ book_id: currentBook.id, build_pdf: buildPdf })
+            body: JSON.stringify({ book_id: currentBook.id, format, build })
         });
         const data = await res.json();
         if (data.error) {
@@ -320,8 +383,8 @@ async function pollProgress() {
             return;
         }
 
-        if (data.status === 'building_pdf') {
-            statusEl.textContent = data.message || 'Building PDF…';
+        if (data.status === 'building_pdf' || data.status === 'building_epub') {
+            statusEl.textContent = data.message || 'Building…';
         } else {
             statusEl.textContent = details.join(' · ') || 'Working…';
         }
@@ -335,18 +398,22 @@ function renderResult(data) {
     el('progress-section').classList.add('hidden');
     const section = el('result-section');
 
+    const unit = data.unit || 'pages';
+    const folderLabel = unit === 'segments' ? 'Segments folder' : 'Pages folder';
+
     const rows = [];
-    if (data.book_dir) rows.push(fileRow('Pages folder', data.book_dir));
+    if (data.book_dir) rows.push(fileRow(folderLabel, data.book_dir));
+    if (data.epub) rows.push(fileRow('EPUB', data.epub));
     if (data.pdf) rows.push(fileRow('PDF', data.pdf));
 
     const failedNote = data.failed_pages
-        ? `<p class="text-sm text-amber-600 mt-3">${data.failed_pages} of ${data.total_pages} pages could not be downloaded.</p>`
+        ? `<p class="text-sm text-amber-600 mt-3">${data.failed_pages} of ${data.total_pages} ${unit} could not be downloaded.</p>`
         : '';
 
     section.innerHTML = `
         <div class="flex items-center gap-2 text-play-green font-medium mb-3">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-            Downloaded ${escapeHtml(data.downloaded_pages ?? '')} of ${escapeHtml(data.total_pages ?? '')} pages
+            Downloaded ${escapeHtml(data.downloaded_pages ?? '')} of ${escapeHtml(data.total_pages ?? '')} ${escapeHtml(unit)}
         </div>
         <div class="space-y-2">${rows.join('')}</div>
         ${failedNote}
