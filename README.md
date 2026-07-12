@@ -3,12 +3,16 @@
 Download and decrypt books you own on Google Play Books — through a clean local
 **web GUI** or the original command line. Each page is downloaded as a
 high-resolution image; from there you can build a PDF (with metadata and a table
-of contents), run OCR, and optimize.
+of contents), run OCR, and optimize. Books available in reflowable form can
+instead be reconstructed into a valid, self-contained **EPUB**
+(see [Usage (EPUB download)](#usage-epub-download)).
 
 > **This fork adds a browser-based GUI** on top of the original command-line
 > tool by [devnoname120/google-play-book-downloader](https://github.com/devnoname120/google-play-book-downloader).
 > All of the original functionality is preserved — the GUI simply reuses the same
 > download logic. Licensed under AGPL-3.0, like the upstream project.
+
+![The Play Books Downloader web GUI: a book preview card with a live download progress bar](docs/screenshot.png)
 
 **Why**:
 
@@ -25,7 +29,9 @@ of contents), run OCR, and optimize.
   vague term for which they provide no definition). Due to that you can't read the book (that you bought!) on the
   platform of your choice.
 
-**Note**: this script only works for books that have the “Original Pages” viewing option.
+**Note**: PDF output requires a book with the “Original Pages” viewing option;
+EPUB output requires a book with a reflowable (“Flowing text”) edition. The GUI
+shows which formats are available for a given book.
 
 # Web GUI (recommended)
 
@@ -45,15 +51,21 @@ Then:
    as a cURL command, and paste it in. (This is the same `curl.txt` session used
    by the CLI, saved locally.)
 2. Paste a **book ID** or a reader link (`https://play.google.com/books/reader?id=…`)
-   and click **Fetch book** to preview the title, author, and page count.
-3. Click **Download pages**. Progress is shown live and pages land in
+   and click **Fetch book** to preview the title, author, and available editions.
+3. Choose an **output format** — only the editions the book actually has are
+   selectable:
+   - **PDF** — the scanned "Original Pages" are downloaded as high-resolution
+     images. Tick *Also build a PDF* to assemble them into a PDF with metadata
+     and a table of contents (needs the `img2pdf` and `pikepdf` dependencies).
+   - **EPUB** — the reflowable text segments are downloaded and reconstructed
+     into a valid, self-contained EPUB (needs the `ebooklib` and `beautifulsoup4`
+     dependencies).
+4. Click **Download**. Progress is shown live and everything lands in
    `books/<BOOK_ID>/`.
-4. Tick **Build PDF after download** to also produce a PDF with metadata and a
-   table of contents (requires the `img2pdf` and `pikepdf` dependencies, which
-   `poetry install` provides).
 
-The GUI has no third-party server dependencies — it uses Python's built-in HTTP
-server and reuses the same download logic as the CLI (`play_books/`).
+All of these dependencies are provided by `poetry install`. The GUI has no
+third-party *server* dependencies — it uses Python's built-in HTTP server and
+reuses the same download/build logic as the CLI (`play_books/`).
 
 # Prerequisites
 

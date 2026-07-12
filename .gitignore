@@ -18,6 +18,10 @@ curl.txt
 # Downloaded books
 books/
 
+# ...but keep repo documentation assets (e.g. the README screenshot)
+!docs/
+!docs/*.png
+
 # Python
 __pycache__/
 *.pyc

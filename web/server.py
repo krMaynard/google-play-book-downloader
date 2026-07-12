@@ -31,6 +31,15 @@ try:
 except ImportError:
     PDF_AVAILABLE = False
 
+# Whether the optional EPUB-building dependencies are importable.
+try:
+    import bs4  # noqa: F401
+    import ebooklib  # noqa: F401
+
+    EPUB_AVAILABLE = True
+except ImportError:
+    EPUB_AVAILABLE = False
+
 
 class DownloaderHandler(SimpleHTTPRequestHandler):
     """HTTP request handler for the downloader web interface."""
@@ -115,6 +124,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             {
                 "output_dir": str(DEFAULT_OUTPUT_DIR),
                 "pdf_available": PDF_AVAILABLE,
+                "epub_available": EPUB_AVAILABLE,
             }
         )
 
@@ -211,7 +221,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     def _handle_download(self, data: dict):
         raw_id = data.get("book_id", "")
         book_id = downloader.extract_book_id(raw_id)
-        build_pdf = bool(data.get("build_pdf"))
+        # "pdf" (scanned page images) or "epub" (reflowable text segments).
+        fmt = (data.get("format") or "pdf").lower()
+        # Whether to build the output file (PDF/EPUB) after downloading raw assets.
+        # `build_pdf` is accepted for backward compatibility with older clients.
+        build = bool(data.get("build", data.get("build_pdf")))
         # Downloads are always confined to the books directory; the book id is
         # sanitized by extract_book_id so it cannot escape it.
         output_dir = str(DEFAULT_OUTPUT_DIR)
@@ -219,10 +233,18 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         if not book_id:
             self._send_json({"error": "book_id required"}, 400)
             return
-
-        if build_pdf and not PDF_AVAILABLE:
+        if fmt not in ("pdf", "epub"):
+            self._send_json({"error": f"Unknown format '{fmt}'."}, 400)
+            return
+        if fmt == "pdf" and build and not PDF_AVAILABLE:
             self._send_json(
                 {"error": "PDF building needs the 'img2pdf' and 'pikepdf' packages."}, 400
+            )
+            return
+        if fmt == "epub" and not EPUB_AVAILABLE:
+            self._send_json(
+                {"error": "EPUB building needs the 'ebooklib' and 'beautifulsoup4' packages."},
+                400,
             )
             return
 
@@ -241,14 +263,15 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
         thread = threading.Thread(
             target=self._download_async,
-            args=(book_id, cookies, headers, output_dir, build_pdf),
+            args=(book_id, cookies, headers, output_dir, fmt, build),
             daemon=True,
         )
         thread.start()
         self._send_json({"status": "started", "book_id": book_id})
 
-    def _download_async(self, book_id, cookies, headers, output_dir, build_pdf):
+    def _download_async(self, book_id, cookies, headers, output_dir, fmt, build):
         DownloaderHandler._cancel_requested.clear()
+        unit = "segments" if fmt == "epub" else "pages"
 
         def on_progress(progress: DownloadProgress):
             self._set_progress(
@@ -262,21 +285,48 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                     "total_pages": progress.total_pages,
                     "failed_pages": progress.failed_pages,
                     "eta_seconds": progress.eta_seconds,
+                    "format": fmt,
+                    "unit": unit,
                 }
             )
 
         try:
-            result = downloader.download_book(
-                book_id=book_id,
-                cookies=cookies,
-                headers=headers,
-                output_dir=output_dir,
-                progress_callback=on_progress,
-                cancel_check=DownloaderHandler._cancel_requested.is_set,
-            )
+            if fmt == "epub":
+                result = downloader.download_segments(
+                    book_id=book_id,
+                    cookies=cookies,
+                    headers=headers,
+                    output_dir=output_dir,
+                    progress_callback=on_progress,
+                    cancel_check=DownloaderHandler._cancel_requested.is_set,
+                )
+            else:
+                result = downloader.download_book(
+                    book_id=book_id,
+                    cookies=cookies,
+                    headers=headers,
+                    output_dir=output_dir,
+                    progress_callback=on_progress,
+                    cancel_check=DownloaderHandler._cancel_requested.is_set,
+                )
 
-            pdf_path = None
-            if build_pdf:
+            pdf_path = epub_path = None
+            # EPUB reconstruction is the whole point of the epub format, so it
+            # always runs; PDF building is optional.
+            if fmt == "epub":
+                self._set_progress(
+                    {
+                        "status": "building_epub",
+                        "book_id": book_id,
+                        "title": result.title,
+                        "percentage": 100,
+                        "message": "Reconstructing EPUB (this can take a while)…",
+                        "format": fmt,
+                        "unit": unit,
+                    }
+                )
+                epub_path = downloader.build_epub(result.book_dir)
+            elif build:
                 self._set_progress(
                     {
                         "status": "building_pdf",
@@ -284,6 +334,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                         "title": result.title,
                         "percentage": 100,
                         "message": "Building PDF (this can take a while)…",
+                        "format": fmt,
+                        "unit": unit,
                     }
                 )
                 pdf_path = downloader.build_pdf(result.book_dir)
@@ -298,7 +350,10 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                     "total_pages": result.total_pages,
                     "downloaded_pages": result.downloaded_pages,
                     "failed_pages": result.failed_pages,
+                    "format": fmt,
+                    "unit": unit,
                     "pdf": pdf_path,
+                    "epub": epub_path,
                 }
             )
         except downloader.CancelledError:

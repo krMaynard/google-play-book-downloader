@@ -24,6 +24,10 @@ import requests
 # Wait between requests to reduce the risk of getting flagged for abuse.
 GOOGLE_PAGE_DOWNLOAD_PACER = 0.1
 
+# Per-request timeout (connect + between-bytes read) so a stalled connection
+# can't hang a download thread forever.
+REQUEST_TIMEOUT = 30
+
 logger = logging.getLogger(__name__)
 
 
@@ -267,7 +271,7 @@ def download_page(src, cookies, headers):
     page_url = urlunparse(url_parts)
     logger.debug(f"Downloading url: {page_url}")
 
-    response = requests.get(page_url, cookies=cookies, headers=headers)
+    response = requests.get(page_url, cookies=cookies, headers=headers, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
 
     mime_type = response.headers.get("content-type")
@@ -286,6 +290,38 @@ def decrypt(buf, aes_key):
 
     cipher = AES.new(aes_key, AES.MODE_CBC, iv)
     return cipher.decrypt(data)
+
+
+def decrypt_segment(buf, aes_key):
+    """Decrypt a reflowable text segment.
+
+    Segments use the same AES-CBC scheme as page images but prefix the payload
+    with a little-endian length, and the plaintext is a UTF-8 JSON string.
+    """
+    from Cryptodome.Cipher import AES
+
+    iv = buf[:16]
+    expected_length = int.from_bytes(buf[16:20], "little")
+    data = buf[20:]
+
+    cipher = AES.new(aes_key, AES.MODE_CBC, iv)
+    decrypted = cipher.decrypt(data)
+    return decrypted[:expected_length].decode("utf-8")
+
+
+def fetch_segment(url, cookies, headers):
+    """Fetch a single reflowable segment (base64-wrapped, encrypted JSON)."""
+    segment_url = urlparse(url)
+    query = parse_qs(segment_url.query)
+    query["enc_all"] = ["1"]
+    query["hl"] = ["en"]  # Fix encoding issues with Cyrillic.
+    segment_url = segment_url._replace(query=urlencode(query, doseq=True))
+
+    response = requests.get(
+        urlunparse(segment_url), cookies=cookies, headers=headers, timeout=REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+    return response
 
 
 def mime_to_ext(mime):
@@ -314,6 +350,7 @@ def fetch_manifest(book_id: str, cookies: dict, headers: dict) -> dict:
         f"?hl=en&authuser=2&source=ge-web-app",
         cookies=cookies,
         headers=headers,
+        timeout=REQUEST_TIMEOUT,
     )
     response.raise_for_status()
     return json.loads(response.text)
@@ -339,6 +376,9 @@ def fetch_book_info(book_id: str, cookies: dict, headers: dict) -> dict:
     missing = sum(1 for p in pages if not p.get("src") or not isinstance(p["src"], str))
     preview = metadata.get("preview")
 
+    segments = manifest.get("segment", []) or []
+    num_segments = len(segments)
+
     return {
         "id": book_id,
         "volume_id": metadata.get("volume_id", book_id),
@@ -350,6 +390,10 @@ def fetch_book_info(book_id: str, cookies: dict, headers: dict) -> dict:
         "num_pages": total,
         "downloadable_pages": total - missing,
         "missing_pages": missing,
+        "num_segments": num_segments,
+        # Which output formats this book actually supports.
+        "has_scanned": total > 0,       # "Original Pages" → images → PDF
+        "has_reflowable": num_segments > 0,  # flowing text → segments → EPUB
         "preview": preview,
         "is_full": preview == "full",
         "cover_url": cover_url_for(metadata.get("volume_id", book_id)),
@@ -395,6 +439,7 @@ def download_book(
         f"https://play.google.com/books/reader?id={book_id}&hl=en",
         cookies=cookies,
         headers=headers,
+        timeout=REQUEST_TIMEOUT,
     )
     body = reader_response.text
 
@@ -593,3 +638,169 @@ def build_pdf(book_dir: str) -> str:
 
     logger.info(f'PDF saved to "{output_pdf}"')
     return str(output_pdf)
+
+
+def download_segments(
+    book_id: str,
+    cookies: dict,
+    headers: dict,
+    output_dir: str = "books",
+    progress_callback: Callable[[DownloadProgress], None] = _noop,
+    cancel_check: Callable[[], bool] = lambda: False,
+    pacer: float = GOOGLE_PAGE_DOWNLOAD_PACER,
+) -> DownloadResult:
+    """Download and decrypt every reflowable text *segment* of a book.
+
+    Each segment is written as ``<label>.xhtml`` (+ ``<label>.css``) alongside the
+    ``manifest.json`` — exactly what :func:`build_epub` needs to reconstruct an EPUB.
+    Only books with a "flowing text" edition expose segments.
+    """
+
+    def emit(progress: DownloadProgress):
+        try:
+            progress_callback(progress)
+        except Exception:
+            logger.exception("progress_callback raised")
+
+    def check_cancel():
+        if cancel_check():
+            raise CancelledError("Download cancelled")
+
+    book_dir = Path(output_dir) / book_id
+    book_dir.mkdir(parents=True, exist_ok=True)
+
+    emit(DownloadProgress(status="fetching", book_id=book_id, message="Fetching book metadata…"))
+
+    # &hl=en is necessary to fix encoding issues with Cyrillic.
+    reader_response = requests.get(
+        f"https://play.google.com/books/reader?id={book_id}&hl=en",
+        cookies=cookies,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+    )
+    body = reader_response.text
+
+    aes_key = extract_decryption_key(body)
+    (book_dir / "aes_key.bin").write_bytes(aes_key)
+
+    manifest = fetch_manifest(book_id, cookies, headers)
+    (book_dir / "manifest.json").write_text(json.dumps(manifest, indent=4))
+
+    metadata = manifest.get("metadata", {})
+    title = unescape_html(metadata.get("title", "") or book_id)
+
+    if metadata.get("preview") != "full":
+        logger.error(
+            "The server indicates that the book is in preview mode "
+            f"'{metadata.get('preview')}' (expected 'full'). You may not own this "
+            "book on this account, or your session may be invalid/expired."
+        )
+
+    segments = manifest.get("segment", []) or []
+    total = len(segments)
+    if total == 0:
+        raise RuntimeError(
+            "This book has no reflowable text segments (no EPUB edition available). "
+            "Try the PDF format if it has scanned 'Original Pages' instead."
+        )
+
+    (book_dir / "segments.txt").write_text(
+        "".join(f"{s.get('label') or ''}\n" for s in segments)
+    )
+
+    logger.info(f"Starting to download {total} segments…")
+    emit(
+        DownloadProgress(
+            status="downloading",
+            book_id=book_id,
+            title=title,
+            total_pages=total,
+            message=f"Downloading {total} segments…",
+        )
+    )
+
+    saved = 0
+    failed = 0
+    start_time = time.monotonic()
+
+    for i, segment in enumerate(segments):
+        check_cancel()
+        seg_no = i + 1
+        # `or` (not a .get default) so an explicit "label": null also falls back,
+        # otherwise every null-labelled segment would clobber None.xhtml.
+        label = segment.get("label") or f"segment-{seg_no}"
+
+        try:
+            url = "https://play.google.com" + segment["link"]
+            enc_b64 = fetch_segment(url, cookies, headers).text
+            decrypted = decrypt_segment(base64.b64decode(enc_b64), aes_key)
+            segment_obj = json.loads(decrypted)
+
+            (book_dir / f"{label}.xhtml").write_text(segment_obj["content"], encoding="utf-8")
+            (book_dir / f"{label}.css").write_text(segment_obj.get("style", ""), encoding="utf-8")
+            saved += 1
+            logger.info(f"[{seg_no}/{total}] Saved segment {label}")
+        except CancelledError:
+            raise
+        except Exception as e:
+            failed += 1
+            logger.error(f"[{seg_no}/{total}] Segment {label} failed with {e}")
+
+        elapsed = time.monotonic() - start_time
+        eta = int((elapsed / seg_no) * (total - seg_no)) if seg_no else None
+        emit(
+            DownloadProgress(
+                status="downloading",
+                book_id=book_id,
+                title=title,
+                total_pages=total,
+                current_page=seg_no,
+                failed_pages=failed,
+                percentage=int(seg_no / total * 100) if total else 0,
+                eta_seconds=eta,
+                message=f"Segment {seg_no} of {total}",
+            )
+        )
+
+        time.sleep(pacer)  # Be gentle with Google Play Books.
+
+    logger.info(f'Finished. Downloaded segments can be found in "{book_dir}".')
+
+    result = DownloadResult(
+        book_id=book_id,
+        title=title,
+        book_dir=str(book_dir),
+        total_pages=total,
+        downloaded_pages=saved,
+        failed_pages=failed,
+    )
+
+    emit(
+        DownloadProgress(
+            status="downloaded",
+            book_id=book_id,
+            title=title,
+            total_pages=total,
+            current_page=total,
+            failed_pages=failed,
+            percentage=100,
+            message=f"Downloaded {saved} of {total} segments",
+        )
+    )
+
+    return result
+
+
+def build_epub(book_dir: str) -> str:
+    """Reconstruct a valid, self-contained EPUB from downloaded segments.
+
+    Requires the optional ``ebooklib`` and ``beautifulsoup4`` dependencies. Returns
+    the path to the generated EPUB.
+    """
+
+    # Imported lazily: EPUB building is optional and pulls in extra dependencies.
+    from play_book_epub_tool.play_book_epub_tool import build_epub as reconstruct_epub
+
+    output = reconstruct_epub(Path(book_dir))
+    logger.info(f'EPUB saved to "{output}"')
+    return str(output)
