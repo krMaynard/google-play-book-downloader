@@ -1,5 +1,14 @@
-Google Play Books downloader for interoperability purposes. Each page is downloaded as an image, it's up to you to build
-a PDF from them, do OCR, and add metadata.
+# Google Play Books Downloader
+
+Download and decrypt books you own on Google Play Books — through a clean local
+**web GUI** or the original command line. Each page is downloaded as a
+high-resolution image; from there you can build a PDF (with metadata and a table
+of contents), run OCR, and optimize.
+
+> **This fork adds a browser-based GUI** on top of the original command-line
+> tool by [devnoname120/google-play-book-downloader](https://github.com/devnoname120/google-play-book-downloader).
+> All of the original functionality is preserved — the GUI simply reuses the same
+> download logic. Licensed under AGPL-3.0, like the upstream project.
 
 **Why**:
 
@@ -20,8 +29,9 @@ a PDF from them, do OCR, and add metadata.
 
 # Web GUI (recommended)
 
-A small local web interface is included that wraps the whole PDF workflow — no
-command line needed. It runs entirely on your machine.
+A local web interface wraps the whole download-and-build workflow — no command
+line needed. It runs entirely on your machine. Once you've installed the
+dependencies (see [Prerequisites](#prerequisites)), start it with:
 
 ```shell
 poetry run python gui.py            # opens http://localhost:8000 in your browser
@@ -50,7 +60,7 @@ server and reuses the same download logic as the CLI (`play_books/`).
 - Install [Python](https://www.python.org/downloads/)
   and [Poetry](https://python-poetry.org/docs/#installing-with-the-official-installer).
 - Download and extract
-  the [project repository](https://github.com/devnoname120/google-play-book-downloader/archive/refs/heads/main.zip).
+  the [project repository](https://github.com/krMaynard/google-play-book-downloader/archive/refs/heads/main.zip).
 - Run `poetry install` inside the extracted project repository folder in order to download the dependencies.
 
 # Usage (PDF download)
