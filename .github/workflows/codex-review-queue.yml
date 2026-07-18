@@ -1,0 +1,70 @@
+name: Queue Claude PRs for Codex review
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label ready Claude-authored pull requests
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || "";
+            let fromClaude =
+              pr.head.ref.startsWith("claude/") || body.includes("Claude Code");
+            if (!fromClaude) {
+              const commits = await github.paginate(
+                github.rest.pulls.listCommits,
+                { owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number, per_page: 100 },
+              );
+              fromClaude = commits.some(commit => {
+                const author = (commit.commit.author?.name || "").toLowerCase();
+                const email = (commit.commit.author?.email || "").toLowerCase();
+                const message = commit.commit.message || "";
+                return author === "claude" || email.endsWith("@anthropic.com") ||
+                  message.includes("Claude-Session:") ||
+                  /Co-Authored-By:\s*Claude\b/i.test(message);
+              });
+            }
+            if (pr.draft || !fromClaude) return;
+
+            const labels = [
+              ["codex-review", "1d76db", "Queued for automated Codex review"],
+              ["codex-reviewed", "0e8a16", "Latest revision reviewed by Codex"],
+            ];
+            for (const [name, color, description] of labels) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner, repo: context.repo.repo, name,
+                });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  name, color, description,
+                });
+              }
+            }
+
+            const current = pr.labels.map(label => label.name);
+            if (current.includes("codex-reviewed")) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, name: "codex-reviewed",
+              });
+            }
+            if (!current.includes("codex-review")) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: pr.number, labels: ["codex-review"],
+              });
+            }
